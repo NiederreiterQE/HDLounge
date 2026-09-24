@@ -1,0 +1,7 @@
+{
+  "uuid": "hdloungeinject@test",
+  "name": "HDLounge Test Input Injector",
+  "description": "TEST ONLY. Injects synthetic key events so the HDLounge keyboard contract can be tested headlessly. Never installed by install.sh.",
+  "shell-version": ["50"],
+  "version-name": "1.0.0"
+}

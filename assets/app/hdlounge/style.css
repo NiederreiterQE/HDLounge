@@ -1,0 +1,322 @@
+/*
+Theme Name: HDLounge
+Theme URI: https://github.com/harm0nic/HDLounge
+Author: Harmonic Design
+Author URI: https://harmonicdesign.ca
+Description: minimal TV interface. Sized for a couch, not a desk.
+*/
+window.hdlounge {
+  background: #0b0d10;
+}
+
+.scrim {
+  background: linear-gradient(160deg, #12151b 0%, #0b0d10 55%, #05070a 100%);
+}
+
+/* Topbar
+------------------------------------------------------- */
+.topbar {
+  padding: 34px 52px 0 52px;
+}
+
+.clock {
+  font-size: 30pt;
+  font-weight: 300;
+  color: #ffffff;
+  letter-spacing: -0.5px;
+}
+
+.date {
+  font-size: 13pt;
+  font-weight: 400;
+  color: alpha(#ffffff, 0.62);
+  margin-top: 16px;
+  margin-left: 4px;
+}
+
+.warning_chip {
+  background: alpha(#e5a50a, 0.18);
+  color: #f5c211;
+  border: 1px solid alpha(#e5a50a, 0.4);
+  border-radius: 999px;
+  padding: 6px 16px;
+  font-size: 10pt;
+  margin-top: 14px;
+}
+
+/* Drawer
+------------------------------------------------------- */
+.app_drawer {
+  background: transparent;
+  padding: 20px 52px;
+}
+
+.app_tile {
+  padding: 22px 14px 16px 14px;
+  border-radius: 20px;
+  border: 2px solid transparent;
+  background: transparent;
+  transition: background 140ms ease, border-color 140ms ease,
+    transform 140ms ease;
+}
+
+.app_tile:hover {
+  background: alpha(#ffffff, 0.07);
+}
+
+/* Focus is the primary affordance here -- it must read from across a room. */
+.app_tile.focused,
+.app_tile:focus {
+  background: alpha(#ffffff, 0.14);
+  border-color: alpha(#ffffff, 0.85);
+  outline: none;
+}
+
+.app_tile_label {
+  font-size: 12pt;
+  color: alpha(#ffffff, 0.78);
+}
+
+.app_tile.transient .app_tile_label {
+  color: alpha(#ffffff, 0.55);
+}
+
+.drawer_divider {
+  background: alpha(#ffffff, 0.18);
+  min-width: 2px;
+  margin: 28px 10px;
+}
+
+.app_tile.focused .app_tile_label,
+.app_tile:focus .app_tile_label {
+  color: #ffffff;
+}
+
+.app_tile.launching {
+  background: alpha(#ffffff, 0.24);
+  border-color: #62a0ea;
+  animation: tile_launching 1200ms ease-in-out infinite;
+}
+
+@keyframes tile_launching {
+  0% {
+    background: alpha(#ffffff, 0.24);
+  }
+
+  50% {
+    background: alpha(#ffffff, 0.07);
+  }
+
+  100% {
+    background: alpha(#ffffff, 0.24);
+  }
+}
+
+.app_tile.launching .app_tile_label {
+  color: #8fc0f0;
+}
+
+.running_dot {
+  background: alpha(#ffffff, 0.55);
+  border-radius: 999px;
+  min-width: 8px;
+  min-height: 8px;
+}
+
+.running_dot.focused_app {
+  background: #62a0ea;
+}
+
+.running_dot.starting {
+  background: #62a0ea;
+  animation: dot_starting 1200ms ease-in-out infinite;
+}
+
+@keyframes dot_starting {
+  0% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.15;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+.empty_hint {
+  color: alpha(#ffffff, 0.5);
+  font-size: 14pt;
+  padding: 40px;
+}
+
+/* Hintbar
+------------------------------------------------------- */
+.hintbar {
+  padding: 0 52px 34px 52px;
+  transition: opacity 700ms ease;
+}
+
+.hintbar.faded {
+  opacity: 0;
+}
+
+.key_chip {
+  background: alpha(#ffffff, 0.12);
+  color: alpha(#ffffff, 0.9);
+  border-radius: 7px;
+  padding: 3px 10px;
+  font-size: 9pt;
+  font-weight: 700;
+}
+
+.hint_label {
+  color: alpha(#ffffff, 0.55);
+  font-size: 10pt;
+}
+
+/* Quick settings
+------------------------------------------------------- */
+.quick_settings {
+  background: #16181d;
+  border-left: 1px solid alpha(#ffffff, 0.09);
+  padding: 32px 28px;
+}
+
+.qs_title {
+  font-size: 19pt;
+  font-weight: 700;
+  color: #ffffff;
+  margin-bottom: 4px;
+}
+
+.qs_section {
+  font-size: 10pt;
+  font-weight: 700;
+  color: alpha(#ffffff, 0.5);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+
+.qs_status_title {
+  font-size: 11pt;
+  color: #ffffff;
+}
+
+.qs_status_value {
+  font-size: 10pt;
+  color: alpha(#ffffff, 0.55);
+}
+
+.quick_settings button {
+  padding: 10px 14px;
+  border-radius: 12px;
+}
+
+.quick_settings scale {
+  margin: 0 2px;
+}
+
+/* Tile menu
+------------------------------------------------------- */
+.tile_menu contents {
+  background: #1c1f26;
+  border-radius: 14px;
+  padding: 8px;
+}
+
+.tile_menu button {
+  padding: 9px 18px;
+  border-radius: 9px;
+  font-size: 11pt;
+}
+
+.tile_menu button.destructive {
+  color: #ff7b72;
+}
+
+.tile_menu button:focus,
+.tile_menu button:hover {
+  background: alpha(#ffffff, 0.12);
+}
+
+/* Action bar
+------------------------------------------------------- */
+.action_bar {
+  margin-top: 10px;
+}
+
+.action_button {
+  background: alpha(#ffffff, 0.10);
+  color: alpha(#ffffff, 0.85);
+  border: 2px solid transparent;
+  border-radius: 12px;
+  padding: 10px 14px;
+  min-width: 26px;
+  min-height: 26px;
+}
+
+.action_button:hover {
+  background: alpha(#ffffff, 0.16);
+}
+
+.action_button:focus {
+  background: alpha(#ffffff, 0.20);
+  border-color: alpha(#ffffff, 0.85);
+  color: #ffffff;
+  outline: none;
+}
+
+.focus_bubble {
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.focus_bubble.shown {
+  opacity: 1;
+}
+
+.focus_bubble_body {
+  background: #2b2f36;
+  border-radius: 14px;
+  padding: 12px 18px;
+  box-shadow: 0 6px 24px alpha(#000000, 0.45);
+}
+
+.focus_bubble_arrow {
+  color: #2b2f36;
+}
+
+.focus_bubble_title {
+  color: #ffffff;
+  font-size: 14pt;
+  font-weight: 600;
+}
+
+.focus_bubble_detail {
+  color: alpha(#ffffff, 0.70);
+  font-size: 11pt;
+}
+
+/* Credit
+------------------------------------------------------- */
+.qs_credit {
+  font-size: 9pt;
+  color: alpha(#ffffff, 0.40);
+  padding: 8px 4px;
+  border: 2px solid transparent;
+  border-radius: 8px;
+}
+
+.qs_credit:focus {
+  border-color: alpha(#ffffff, 0.6);
+  color: alpha(#ffffff, 0.65);
+  outline: none;
+}
+
+.qs_credit>link {
+  color: #7aa2f7;
+  text-decoration: underline;
+}

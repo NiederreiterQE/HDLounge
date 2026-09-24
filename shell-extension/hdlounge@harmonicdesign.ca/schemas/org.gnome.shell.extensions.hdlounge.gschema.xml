@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="hdlounge">
+  <schema id="org.gnome.shell.extensions.hdlounge" path="/org/gnome/shell/extensions/hdlounge/">
+
+    <key name="show-home" type="as">
+      <default><![CDATA[['<Super>Home', 'XF86HomePage']]]></default>
+      <summary>Show the HDLounge home screen</summary>
+      <description>Minimises every other window and focuses the launcher.</description>
+    </key>
+
+    <key name="tv-power" type="as">
+      <default><![CDATA[['XF86Launch1']]]></default>
+      <summary>Switch the television off or on</summary>
+      <description>
+        Asks the launcher to toggle the TV over the network. XF86Launch1 is what
+        a TV remote's Power button reports once the HDLounge keymap is installed.
+      </description>
+    </key>
+
+    <key name="kiosk-mode" type="b">
+      <default>true</default>
+      <summary>Kiosk mode</summary>
+      <description>
+        Hide the top panel and suppress the Activities overview so the launcher is
+        the only desktop UI. Set to false to get stock GNOME chrome back for debugging.
+      </description>
+    </key>
+
+    <key name="force-fullscreen" type="b">
+      <default>true</default>
+      <summary>Force launched apps fullscreen</summary>
+      <description>Fullscreen windows belonging to apps launched from the drawer.</description>
+    </key>
+
+  </schema>
+</schemalist>
