@@ -16,17 +16,17 @@ from .debugshot import trace
 WEB_APP_PREFIX = "hdlounge-web-"
 
 # (desktop id, name, command) of each browser that can host a website tile,
-# best first. The Flatpaks, and the packages: Google's own RPM, which GNOME
-# Software offers as a third-party repository, and Fedora's chromium. A None
-# command is read from the browser's own desktop entry.
+# best first. On Ubuntu: Google's own .deb (what install.sh offers to set up),
+# then Chromium as a Snap or as a .deb. A None command is read from the
+# browser's own desktop entry; a tuple is used as it stands, because a Snap's
+# desktop entry does not name the browser binary directly.
 BROWSERS = (
-
     ("google-chrome.desktop", "Google Chrome", None),
-
-    ("chromium-browser.desktop", "Chromium", None),
+    ("chromium_chromium.desktop", "Chromium", ("/snap/bin/chromium",)),
+    ("chromium.desktop", "Chromium", None),
 )
 # Only Chrome ships Widevine.
-DRM_BROWSERS = ("google-chrome.desktop")
+DRM_BROWSERS = ("google-chrome.desktop",)
 
 PRESETS = (
     ("Netflix", "https://www.netflix.com"),
