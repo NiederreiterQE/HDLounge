@@ -20,21 +20,13 @@ WEB_APP_PREFIX = "hdlounge-web-"
 # Software offers as a third-party repository, and Fedora's chromium. A None
 # command is read from the browser's own desktop entry.
 BROWSERS = (
-    (
-        "com.google.Chrome.desktop",
-        "Google Chrome",
-        ["flatpak", "run", "com.google.Chrome"],
-    ),
+
     ("google-chrome.desktop", "Google Chrome", None),
-    (
-        "org.chromium.Chromium.desktop",
-        "Chromium",
-        ["flatpak", "run", "org.chromium.Chromium"],
-    ),
+
     ("chromium-browser.desktop", "Chromium", None),
 )
 # Only Chrome ships Widevine.
-DRM_BROWSERS = ("com.google.Chrome.desktop", "google-chrome.desktop")
+DRM_BROWSERS = ("google-chrome.desktop")
 
 PRESETS = (
     ("Netflix", "https://www.netflix.com"),
