@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Remove HDLounge and restore stock GNOME behaviour.
+# Reworked for Ubuntu / APT by NiederreiterQE.
 set -euo pipefail
 
 UUID="hdlounge@harmonicdesign.ca"
+UBUNTU_DOCK_UUID="ubuntu-dock@ubuntu.com"
 PREFIX="${PREFIX:-$HOME/.local}"
 HWDB_FILE="61-nvidia-shield-remote.hwdb"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/hdlounge"
 STATE_FILE="$CONFIG_DIR/installer-state"
 
 # System paths. Overridable only so this can be tested without root.
-GDM_CONF="${HDLOUNGE_GDM_CONF:-/etc/gdm/custom.conf}"
+GDM_CONF="${HDLOUNGE_GDM_CONF:-/etc/gdm3/custom.conf}"
 HWDB_DIR="${HDLOUNGE_HWDB_DIR:-/etc/udev/hwdb.d}"
 
 say() { printf '\033[1;36m==>\033[0m %s\n' "$1"; }
@@ -56,6 +58,16 @@ gsettings reset org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type |
 gsettings reset org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type || true
 gsettings reset org.gnome.shell welcome-dialog-last-shown-version || true
 
+# The installer switched the Ubuntu Dock off for kiosk mode; no sudo needed.
+if [ "$(state ubuntu-dock)" = "disabled-by-hdlounge" ]; then
+  if gnome-extensions enable "$UBUNTU_DOCK_UUID" 2>/dev/null; then
+    echo "   Ubuntu Dock switched back on."
+  else
+    warn "Could not switch the Ubuntu Dock back on; do it with:"
+    echo "   gnome-extensions enable $UBUNTU_DOCK_UUID"
+  fi
+fi
+
 # System changes
 # -------------------------------------------------------
 
@@ -65,22 +77,38 @@ for f in "$HWDB_DIR/$HWDB_FILE" "$HWDB_DIR"/61-hdlounge-remote-*.hwdb; do
   [ -f "$f" ] && hwdb_files+=("$f")
 done
 AUTOLOGIN_USER="$(state autologin)"
-SSHD_STATE="$(state sshd)"
+SSH_STATE="$(state ssh)"
+SSH_SOCKET_STATE="$(state ssh_socket)"
+
+# Set when sudo was needed but unavailable: the state file must survive so
+# that a second run can still undo everything.
+KEEP_STATE=0
 
 if [ ${#hwdb_files[@]} -gt 0 ] || [ -n "$AUTOLOGIN_USER" ] ||
-   [ "$SSHD_STATE" = "enabled-by-hdlounge" ]; then
+   [ "$SSH_STATE" = "enabled-by-hdlounge" ] ||
+   [ "$SSH_SOCKET_STATE" = "enabled-by-hdlounge" ]; then
   say "Undoing the system changes the installer made (needs your password)"
+
   if ! command -v sudo >/dev/null 2>&1 || ! { sudo -n true 2>/dev/null || sudo -v; }; then
+    KEEP_STATE=1
     warn "Could not get sudo. Undo these as root:"
+
     if [ ${#hwdb_files[@]} -gt 0 ]; then
       echo "   rm ${hwdb_files[*]} && systemd-hwdb update"
     fi
+
     if [ -n "$AUTOLOGIN_USER" ]; then
       echo "   remove the AutomaticLogin lines from [daemon] in $GDM_CONF"
     fi
-    if [ "$SSHD_STATE" = "enabled-by-hdlounge" ]; then
-      echo "   systemctl disable sshd"
+
+    if [ "$SSH_STATE" = "enabled-by-hdlounge" ]; then
+      echo "   systemctl disable ssh.service"
     fi
+
+    if [ "$SSH_SOCKET_STATE" = "enabled-by-hdlounge" ]; then
+      echo "   systemctl disable ssh.socket"
+    fi
+
   else
     if [ ${#hwdb_files[@]} -gt 0 ]; then
       if sudo rm -f "${hwdb_files[@]}" &&
@@ -140,21 +168,34 @@ GDM
       fi
     fi
 
-    if [ "$SSHD_STATE" = "enabled-by-hdlounge" ]; then
-      # Disable, but do not stop: this may well be running over SSH.
-      if sudo systemctl disable sshd 2>/dev/null; then
-        echo "   SSH will not start at the next boot (it keeps running until then)."
+    # Disable, but do not stop: this may well be running over SSH.
+    if [ "$SSH_SOCKET_STATE" = "enabled-by-hdlounge" ]; then
+      if sudo systemctl disable ssh.socket 2>/dev/null; then
+        echo "   SSH socket will not start at the next boot."
       else
-        warn "Could not disable sshd."
+        warn "Could not disable ssh.socket."
+      fi
+    fi
+
+    if [ "$SSH_STATE" = "enabled-by-hdlounge" ]; then
+      if sudo systemctl disable ssh.service 2>/dev/null; then
+        echo "   SSH service will not start at the next boot."
+      else
+        warn "Could not disable ssh.service."
       fi
     fi
   fi
 fi
 
-rm -f "$STATE_FILE"
+if [ "$KEEP_STATE" = 1 ]; then
+  warn "Kept $STATE_FILE so a second run with sudo can finish the job."
+else
+  rm -f "$STATE_FILE"
+fi
 
 echo
 echo "  Removed. Config kept at ~/.config/hdlounge/ -- delete it by hand if you want."
 echo "  A paired TV is left switched on, and its pairing key stays in that file."
+echo "  Packages installed by apt (openssh-server, Google Chrome, GSConnect) stay."
 echo "  Log out and back in to fully unload the extension."
 echo
