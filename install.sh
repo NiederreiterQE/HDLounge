@@ -1,28 +1,22 @@
 #!/usr/bin/env bash
 # Install HDLounge: the launcher app + its GNOME Shell extension.
+# Reworked for Ubuntu / APT by NiederreiterQE.
 set -euo pipefail
 
 # Vars
 # -------------------------------------------------------
 
-SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_SRC="$REPO_ROOT/assets/app"
 # set -u would stop dead in a shell that never exported it.
 USER="${USER:-$(id -un)}"
 UUID="hdlounge@harmonicdesign.ca"
 HWDB_FILE="61-nvidia-shield-remote.hwdb"
 SHIELD_REMOTE="0955:7217"
 GSCONNECT_UUID="gsconnect@andyholmes.github.io"
-
-# Offered one at a time, then installed together:
-# "flatpak id|name|HDLOUNGE_APP_<key>|pin or nopin|what it is".
-FLATPAK_APPS=(
-  "tv.kodi.Kodi|Kodi|KODI|pin|media centre for local and network video"
-  "rocks.shy.VacuumTube|VacuumTube|VACUUMTUBE|pin|YouTube's TV interface, built for a remote"
-  "com.valvesoftware.Steam|Steam|STEAM|pin|games, with Big Picture mode"
-  "net.retrodeck.retrodeck|RetroDeck|RETRODECK|pin|retro gaming platform"
-)
-# In case chrome not installed and user wants website tiles
-CHROME_APP="com.google.Chrome|Google Chrome|CHROME|nopin|for the website tiles"
+GSCONNECT_APT="gnome-shell-extension-gsconnect"
+UBUNTU_DOCK_UUID="ubuntu-dock@ubuntu.com"
+CHROME_DEB_URL="https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
 
 PREFIX="${PREFIX:-$HOME/.local}"
 APP_DIR="$PREFIX/share/hdlounge"
@@ -34,19 +28,22 @@ SYSTEMD_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/hdlounge"
 # What this script changed outside $HOME, so uninstall.sh undoes it
 STATE_FILE="$CONFIG_DIR/installer-state"
-# Freshly exported Flatpak desktop files are only visible to GLib if the exports directory is on XDG_DATA_DIRS
-FLATPAK_DATA_DIRS="${XDG_DATA_HOME:-$HOME/.local/share}/flatpak/exports/share:/var/lib/flatpak/exports/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+
 # System paths. Overridable only so the installer can be tested without root.
-GDM_CONF="${HDLOUNGE_GDM_CONF:-/etc/gdm/custom.conf}"
+GDM_CONF="${HDLOUNGE_GDM_CONF:-/etc/gdm3/custom.conf}"
 HWDB_DIR="${HDLOUNGE_HWDB_DIR:-/etc/udev/hwdb.d}"
 INPUT_DEVICES="${HDLOUNGE_INPUT_DEVICES:-/proc/bus/input/devices}"
 
-# Questions
+# Set to 1 once sudo has been obtained (see "Sudo" below).
+SUDO_OK=0
+
+# Helpers
 # -------------------------------------------------------
 say() { printf '\033[1;36m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$1"; }
 
-# The Questions
+# ask VAR PROMPT -- VAR=1/y/yes answers yes, VAR=0/n/no answers no,
+# otherwise ask on the terminal (default: no).
 ask() {
   local var="$1" prompt="$2" reply
   case "${!var:-}" in
@@ -69,6 +66,23 @@ record() {
   mv "$STATE_FILE.tmp" "$STATE_FILE"
 }
 
+# names_of FIELD ENTRY... -- one field of each "a|b|c" entry, comma-separated.
+names_of() {
+  local field="$1" entry out=""
+  shift
+  for entry in "$@"; do
+    out+="${out:+, }$(cut -d'|' -f"$field" <<<"$entry")"
+  done
+  echo "${out:-none}"
+}
+
+# True if ufw exists, sudo is available and the firewall is active.
+ufw_active() {
+  command -v ufw >/dev/null 2>&1 &&
+    [ "$SUDO_OK" = 1 ] &&
+    sudo -n ufw status 2>/dev/null | grep -q "Status: active"
+}
+
 # Confirmation
 # -------------------------------------------------------
 if [ "${HDLOUNGE_YES:-0}" != "1" ] && [ -t 0 ]; then
@@ -77,12 +91,13 @@ This installs HDLounge as the desktop for THIS machine. It will:
 
   * install a GNOME Shell extension and enable it
   * enable KIOSK MODE -- hides the top panel and the Activities overview
+  * switch off the Ubuntu Dock, if it is active
   * autostart the launcher on login
   * disable the hot corner and GNOME's welcome dialog
 
 Then it asks some questions, all optional: Bluetooth TV remote, sleep and
-the lock screen, automatic login, SSH, a phone as a remote (GSConnect), 
-TV apps from Flathub, and website tiles for streaming services.
+the lock screen, automatic login, SSH, a phone as a remote (GSConnect),
+and website tiles for streaming services (with Google Chrome for DRM).
 
 Intended for a **dedicated TV box**, not a daily-driver desktop.
 All of it is reversible with ./uninstall.sh, and kiosk mode can be turned
@@ -98,13 +113,25 @@ WARN
   echo
 fi
 
-# Dependencies
+# Dependencies (Ubuntu / APT)
 # -------------------------------------------------------
-DNF_PACKAGES=(python3-gobject gtk4 libadwaita wireplumber pulseaudio-utils curl)
+APT_PACKAGES=(
+  python3-gi
+  python3-gi-cairo
+  gir1.2-gtk-4.0
+  gir1.2-adw-1
+  libglib2.0-bin
+  wireplumber
+  pulseaudio-utils
+  bluez
+  curl
+)
+
+missing=()
 
 check_deps() {
   missing=()
-  for cmd in python3 gnome-shell glib-compile-schemas wpctl pactl curl; do
+  for cmd in python3 gnome-shell glib-compile-schemas wpctl pactl bluetoothctl curl; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
   done
   python3 -c '
@@ -112,21 +139,24 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw
-' 2>/dev/null || missing+=("python3-gobject with GTK4 + libadwaita")
+' 2>/dev/null || missing+=("Python GTK4 / libadwaita")
 }
 
 say "Checking dependencies"
 check_deps
+
 if [ ${#missing[@]} -gt 0 ]; then
   warn "Missing: ${missing[*]}"
-  if command -v dnf >/dev/null 2>&1 &&
-     ask HDLOUNGE_DNF "Install them now with dnf (needs your password)?"; then
-    sudo dnf install -y "${DNF_PACKAGES[@]}" || true
+  if command -v apt-get >/dev/null 2>&1 &&
+     ask HDLOUNGE_APT "Install missing dependencies with APT (needs your password)?"; then
+    sudo apt-get update || warn "apt-get update failed; trying to install anyway."
+    sudo apt-get install -y "${APT_PACKAGES[@]}" || warn "apt-get install failed."
     check_deps
   fi
   if [ ${#missing[@]} -gt 0 ]; then
+    echo "   Still missing: ${missing[*]}"
     echo "   Install with:"
-    echo "   sudo dnf install ${DNF_PACKAGES[*]}"
+    echo "   sudo apt-get install ${APT_PACKAGES[*]}"
     exit 1
   fi
 fi
@@ -134,7 +164,7 @@ fi
 # Ensure extension is compatible with the running shell version
 shell_major="$(gnome-shell --version 2>/dev/null | grep -oE '[0-9]+' | head -n1)" || shell_major=""
 if [ -n "$shell_major" ] &&
-   ! python3 - "$SRC/shell-extension/$UUID/metadata.json" "$shell_major" <<'PY'
+   ! python3 - "$REPO_ROOT/shell-extension/$UUID/metadata.json" "$shell_major" <<'PY'
 import json
 import sys
 
@@ -152,10 +182,11 @@ fi
 # Optional: without it everything works except game controllers.
 if ! python3 -c 'import gi; gi.require_version("Manette", "0.2")' 2>/dev/null; then
   warn "libmanette is not installed, so game controllers will not function with HDLounge."
-  echo "   (sudo dnf install libmanette)"
+  echo "   (sudo apt-get install gir1.2-manette-0.2)"
 fi
 
 # A launcher already running
+# -------------------------------------------------------
 LAUNCHER_PAUSED=0
 
 resume_launcher() {
@@ -296,7 +327,7 @@ device_ids() {
 }
 
 # TV power
-# Currently modern LG TVs only. 
+# Currently modern LG TVs only.
 # TODO: Figure out how to do with other major brands (Samsung, Sony, Vizio, etc.)
 # -------------------------------------------------------
 TV_HOST=""
@@ -319,7 +350,7 @@ CFG
 # (webOS shows an accept prompt)
 pair_tv() {
   local host
-  host="$(PYTHONPATH="$SRC/app" python3 - "${HDLOUNGE_TV_HOST:-}" 3<&0 4>&1 >&2 <<'TV'
+  host="$(PYTHONPATH="$APP_SRC" python3 - "${HDLOUNGE_TV_HOST:-}" 3<&0 4>&1 >&2 <<'TV'
 import os
 import sys
 
@@ -413,9 +444,8 @@ WANT_NOSLEEP=0
 WANT_AUTOLOGIN=0
 WANT_SSH=0
 WANT_GSCONNECT=0
+WANT_CHROME=0
 WANT_REBOOT=0
-QUEUE=()          # apps to download
-PIN_EXISTING=()   # apps already installed, to pin without downloading again
 WEBSITES=()       # "name|address" of each website tile to add
 
 BLANK_MINUTES="${HDLOUNGE_BLANK_MINUTES:-30}"
@@ -423,26 +453,13 @@ case "$BLANK_MINUTES" in
   ''|*[!0-9]*) BLANK_MINUTES=30 ;;
 esac
 
-HAVE_FLATPAK=0
-command -v flatpak >/dev/null 2>&1 && HAVE_FLATPAK=1
-
-# names_of FIELD ENTRY... -- one field of each "a|b|c" entry, comma-separated.
-names_of() {
-  local field="$1" entry out=""
-  shift
-  for entry in "$@"; do
-    out+="${out:+, }$(cut -d'|' -f"$field" <<<"$entry")"
-  done
-  echo "${out:-none}"
-}
-
 # Pairing needs someone holding the remote, so it happens now, not later.
 if [ -t 0 ] && ask HDLOUNGE_PAIR "Pair a Bluetooth TV remote now? (Also picks up one that is already paired.)"; then
   pair_remote
 fi
 
-# A TV remote's OK and Menu buttons report HID usages that map to keycodes
-# Stop remote power button from suspending the machine since it's easy to accidentally press.
+# A TV remote's OK and Menu buttons report HID usages that map to keycodes.
+# Also stops the remote's power button from suspending the machine.
 ask HDLOUNGE_REMOTE "Make a TV remote's OK, Menu and Power buttons work in every app? (A key mapping for the NVIDIA SHIELD remote${PAIRED_NAME:+ and $PAIRED_NAME}; Power switches the TV, never the PC.)" &&
   WANT_REMOTE=1
 
@@ -461,12 +478,10 @@ ask_minutes() {
   esac
 }
 
-# Most PCs have no HDMI-CEC, so without this the TV stays lit on a blank
-# screen. Pairing needs the TV's own remote, so it happens now, not later.
+# Most PCs have no HDMI-CEC, so without this the TV stays lit on a blank screen.
 EXISTING_TV="$(configured_tv)" || EXISTING_TV=""
 if [ -n "$EXISTING_TV" ] && [ -z "${HDLOUNGE_TV_HOST:-}" ]; then
-  # Paired already, by an earlier run or from quick settings. Pairing again
-  # would put a second "allow HDLounge?" prompt on the television for nothing.
+  # Paired already; pairing again would put a second prompt on the TV.
   TV_HOST="$EXISTING_TV"
   say "The TV at $TV_HOST is already set up"
   echo "   (change or forget it under TV in quick settings)"
@@ -489,7 +504,6 @@ elif [ "$BLANK_MINUTES" -gt 0 ]; then
 else
   sleep_q="Never sleep, lock or blank the screen?"
 fi
-
 if ask HDLOUNGE_NOSLEEP "$sleep_q"; then
   WANT_NOSLEEP=1
   ask_minutes
@@ -499,7 +513,7 @@ elif [ -n "$TV_HOST" ]; then
 fi
 
 # The screen going dark is the trigger, so a box told never to blank
-# pairs with the TV and then never touch it again.
+# pairs with the TV and then never touches it again.
 if [ -n "$TV_HOST" ] && [ "$BLANK_MINUTES" -eq 0 ]; then
   warn "Nothing blanks the screen, so nothing will ever switch the TV off."
   echo "   Re-run with HDLOUNGE_BLANK_MINUTES set to the number of idle minutes"
@@ -510,54 +524,40 @@ ask HDLOUNGE_AUTOLOGIN "Log in automatically at startup, straight into HDLounge?
 ask HDLOUNGE_SSH "Turn on SSH, so this box can be fixed from another computer?" && WANT_SSH=1
 ask HDLOUNGE_GSCONNECT "Install GSConnect, so a phone can be the keyboard and remote?" && WANT_GSCONNECT=1
 
-if ask HDLOUNGE_INSTALL_APPS "Add TV apps to the drawer ($(names_of 2 "${FLATPAK_APPS[@]}"))?"; then
-  if [ "$HAVE_FLATPAK" != 1 ]; then
-    warn "flatpak is not installed, so there are no apps to add. (sudo dnf install flatpak)"
-  else
-    for entry in "${FLATPAK_APPS[@]}"; do
-      IFS='|' read -r app_id app_name app_key _ app_blurb <<<"$entry"
-      # Per-app override, e.g. HDLOUNGE_APP_KODI=1.
-      if flatpak info "$app_id" >/dev/null 2>&1; then
-        ask "HDLOUNGE_APP_$app_key" "Add $app_name to the drawer? (It is already installed.)" &&
-          PIN_EXISTING+=("$entry")
-      else
-        ask "HDLOUNGE_APP_$app_key" "Install $app_name -- $app_blurb?" && QUEUE+=("$entry")
-      fi
-    done
-  fi
-fi
-
-# Website tiles - main;y for streaming services
-mapfile -t WEB_PRESETS < <(PYTHONPATH="$SRC/app" python3 -c '
+# Website tiles -- mainly for streaming services
+mapfile -t WEB_PRESETS < <(PYTHONPATH="$APP_SRC" python3 -c '
 from hdlounge.webapps import PRESETS
 for name, url in PRESETS:
     print(f"{name}|{url}")
 ' 2>/dev/null)
+
 if [ ${#WEB_PRESETS[@]} -gt 0 ] &&
-   ask HDLOUNGE_WEBSITES "Add website tiles for streaming services with no Linux app ($(names_of 1 "${WEB_PRESETS[@]}"))?"; then
+   ask HDLOUNGE_WEBSITES "Add website tiles for streaming services ($(names_of 1 "${WEB_PRESETS[@]}"))?"; then
   for site in "${WEB_PRESETS[@]}"; do
     site_name="${site%%|*}"
-    # HDLOUNGE_WEB_NETFLIX, HDLOUNGE_WEB_PRIMEVIDEO, HDLOUNGE_WEB_DISNEY, HDLOUNGE_WEB_CRAVE, ...
+    # HDLOUNGE_WEB_NETFLIX, HDLOUNGE_WEB_PRIMEVIDEO, ...
     site_key="$(tr -cd '[:alnum:]' <<<"$site_name" | tr '[:lower:]' '[:upper:]')"
     ask "HDLOUNGE_WEB_$site_key" "Add $site_name?" && WEBSITES+=("$site")
   done
+
   if [ ${#WEBSITES[@]} -gt 0 ]; then
-    # Asked of the launcher's own code, so a Chrome installed from Google's
-    # RPM repository counts as well as the Flatpak.
-    browser_kind="$(PYTHONPATH="$SRC/app" XDG_DATA_DIRS="$FLATPAK_DATA_DIRS" python3 -c '
+    # Asked of the launcher's own code, so whatever it can find counts.
+    browser_kind="$(PYTHONPATH="$APP_SRC" python3 -c '
 from hdlounge import webapps
 print("drm" if webapps.browser(drm=True) else "plain" if webapps.browser() else "none")
 ' 2>/dev/null)" || browser_kind="none"
-    if [ "$browser_kind" = drm ]; then
-      :
-    elif [ "$HAVE_FLATPAK" = 1 ]; then
-      echo "   Google Chrome will be installed to play them."
-      QUEUE+=("$CHROME_APP")
-    elif [ "$browser_kind" = plain ]; then
-      warn "Without Google Chrome the pages load, but Netflix and the like will not play."
-    else
-      warn "There is no browser for website tiles and no flatpak to get one; skipping them."
-      WEBSITES=()
+
+    if [ "$browser_kind" != drm ]; then
+      # Netflix and friends need Widevine, which Google Chrome ships.
+      if [ "$(dpkg --print-architecture 2>/dev/null)" = amd64 ] &&
+         ask HDLOUNGE_CHROME "Install Google Chrome (.deb from Google), so Netflix and the like can play?"; then
+        WANT_CHROME=1
+      elif [ "$browser_kind" = plain ]; then
+        warn "Without Google Chrome the pages load, but Netflix and the like will not play."
+      else
+        warn "There is no supported browser for website tiles; skipping them."
+        WEBSITES=()
+      fi
     fi
   fi
 fi
@@ -583,27 +583,25 @@ printf '   %-22s %s\n' \
   "Automatic login" "$(yes_no "$WANT_AUTOLOGIN")" \
   "SSH" "$(yes_no "$WANT_SSH")" \
   "GSConnect" "$(yes_no "$WANT_GSCONNECT")" \
-  "Apps to download" "$(names_of 2 "${QUEUE[@]}")" \
-  "Apps to pin" "$(names_of 2 "${PIN_EXISTING[@]}")" \
+  "Google Chrome" "$(yes_no "$WANT_CHROME")" \
   "Website tiles" "$(names_of 1 "${WEBSITES[@]}")" \
   "Restart at the end" "$(yes_no "$WANT_REBOOT")"
 
 if [ "$WANT_AUTOLOGIN" = 1 ]; then
   echo
-  warn "Automatic login leaves the login keyring locked, so Chrome and apps"
-  echo "   like VacuumTube will ask for your password to unlock it. To stop"
-  echo "   that, open Passwords and Keys (org.gnome.seahorse.Application),"
-  echo "   right-click Login, choose Change Password and leave the new one"
-  echo "   blank. Saved passwords are then stored unencrypted on this machine."
+  warn "Automatic login leaves the login keyring locked, so Chrome and other"
+  echo "   apps will ask for your password to unlock it. To stop that, open"
+  echo "   Passwords and Keys (org.gnome.seahorse.Application), right-click"
+  echo "   Login, choose Change Password and leave the new one blank. Saved"
+  echo "   passwords are then stored unencrypted on this machine."
 fi
 
 # Sudo
 # -------------------------------------------------------
-
 # Asked for once, here, and kept fresh -- so a password prompt never sits
 # waiting half an hour into the downloads.
-SUDO_OK=0
-if [ "$WANT_REMOTE" = 1 ] || [ "$WANT_AUTOLOGIN" = 1 ] || [ "$WANT_SSH" = 1 ]; then
+if [ "$WANT_REMOTE" = 1 ] || [ "$WANT_AUTOLOGIN" = 1 ] || [ "$WANT_SSH" = 1 ] ||
+   [ "$WANT_GSCONNECT" = 1 ] || [ "$WANT_CHROME" = 1 ]; then
   echo
   if ! command -v sudo >/dev/null 2>&1; then
     warn "sudo is not installed; skipping the steps that change system files."
@@ -624,12 +622,11 @@ echo
 
 # The app
 # -------------------------------------------------------
-
 say "Installing launcher to $APP_DIR"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR" "$BIN_DIR" "$DESKTOP_DIR"
-cp -r "$SRC/app/hdlounge" "$APP_DIR/"
-cp "$SRC/app/hdlounge-launcher" "$APP_DIR/"
+cp -r "$APP_SRC/hdlounge" "$APP_DIR/"
+cp "$APP_SRC/hdlounge-launcher" "$APP_DIR/"
 chmod +x "$APP_DIR/hdlounge-launcher"
 # Don't ship stale bytecode from the source tree.
 find "$APP_DIR" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
@@ -654,7 +651,7 @@ DESKTOP
 say "Installing shell extension to $EXT_DIR"
 rm -rf "$EXT_DIR"
 mkdir -p "$EXT_DIR"
-cp -r "$SRC/shell-extension/$UUID/." "$EXT_DIR/"
+cp -r "$REPO_ROOT/shell-extension/$UUID/." "$EXT_DIR/"
 glib-compile-schemas "$EXT_DIR/schemas"
 
 # Autostart
@@ -677,7 +674,7 @@ RestartSec=2
 Slice=session.slice
 
 [Install]
-WantedBy=gnome-session.target
+WantedBy=graphical-session.target
 UNIT
 
   # An older install may have left an XDG autostart entry
@@ -696,12 +693,22 @@ fi
 
 # Gnome bits
 # -------------------------------------------------------
-
 say "Applying GNOME settings"
 gsettings set org.gnome.desktop.interface enable-hot-corners false || true
 # GNOME Tour pops up on a fresh profile and steals keyboard focus from the
 # launcher, which leaves the TV looking unresponsive.
 gsettings set org.gnome.shell welcome-dialog-last-shown-version '99.0' || true
+
+# The Ubuntu Dock would stay on screen in kiosk mode.
+if gnome-extensions list --enabled 2>/dev/null | grep -qx "$UBUNTU_DOCK_UUID"; then
+  if gnome-extensions disable "$UBUNTU_DOCK_UUID" 2>/dev/null; then
+    record ubuntu-dock disabled-by-hdlounge
+    echo "   Ubuntu Dock switched off (uninstall.sh switches it back on)."
+  else
+    warn "Could not switch off the Ubuntu Dock; do it with:"
+    echo "   gnome-extensions disable $UBUNTU_DOCK_UUID"
+  fi
+fi
 
 # Bluetooth remote
 # -------------------------------------------------------
@@ -713,13 +720,13 @@ hwdb_reload() {
 if [ "$WANT_REMOTE" = 1 ]; then
   if [ "$SUDO_OK" != 1 ]; then
     warn "Skipped the remote key mapping (needs sudo). As root:"
-    echo "   cp $SRC/$HWDB_FILE /etc/udev/hwdb.d/ && systemd-hwdb update"
-  elif [ ! -f "$SRC/$HWDB_FILE" ]; then
+    echo "   cp $REPO_ROOT/$HWDB_FILE $HWDB_DIR/ && systemd-hwdb update"
+  elif [ ! -f "$REPO_ROOT/$HWDB_FILE" ]; then
     warn "$HWDB_FILE is not next to this script; skipping the remote key mapping."
   else
     say "Installing the remote key mapping"
     mapped=0
-    if sudo install -D -m 0644 "$SRC/$HWDB_FILE" "$HWDB_DIR/$HWDB_FILE"; then
+    if sudo install -D -m 0644 "$REPO_ROOT/$HWDB_FILE" "$HWDB_DIR/$HWDB_FILE"; then
       mapped=1
       echo "   NVIDIA SHIELD remote: OK -> Enter, Menu -> Menu, Power -> TV on/off."
     fi
@@ -849,28 +856,57 @@ GDM
   fi
 fi
 
-# Ssh
+# SSH
 # -------------------------------------------------------
+# Ubuntu 22.10+ starts sshd through ssh.socket; older releases use ssh.service.
+# Record only the units that this script actually turned on, for uninstall.sh.
+ssh_installed() {
+  dpkg-query -W -f='${db:Status-Status}' openssh-server 2>/dev/null | grep -qx installed
+}
+
 if [ "$WANT_SSH" = 1 ]; then
   if [ "$SUDO_OK" != 1 ]; then
-    warn "Skipped SSH (needs sudo). As root: systemctl enable --now sshd"
+    warn "Skipped SSH (needs sudo). Install openssh-server, then: sudo systemctl enable --now ssh"
   else
     say "Turning on SSH"
-    was_enabled="$(systemctl is-enabled sshd 2>/dev/null || true)"
-    if sudo systemctl enable --now sshd; then
-      # Only undo on uninstall what this script did.
-      [ "$was_enabled" = "enabled" ] || record sshd enabled-by-hdlounge
-      address="$(ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}')" || address=""
-      echo "   From another computer:  ssh $USER@${HOSTNAME:-$(uname -n)}${address:+   (or ssh $USER@$address)}"
-      echo "   Tip: copy a key over with ssh-copy-id and use that instead of a password."
-      if command -v firewall-cmd >/dev/null 2>&1 &&
-         firewall-cmd --state >/dev/null 2>&1 &&
-         ! firewall-cmd --query-service=ssh >/dev/null 2>&1; then
-        warn "The firewall does not allow SSH. Open it with:"
-        echo "   sudo firewall-cmd --permanent --add-service=ssh && sudo firewall-cmd --reload"
+
+    # Capture the state before installing openssh-server: the package may
+    # switch units on by itself.
+    was_socket="$(systemctl is-enabled ssh.socket 2>/dev/null || true)"
+    was_service="$(systemctl is-enabled ssh.service 2>/dev/null || true)"
+
+    if ! ssh_installed; then
+      sudo apt-get install -y openssh-server || warn "Could not install openssh-server. SSH remains disabled."
+    fi
+
+    if ssh_installed; then
+      if systemctl cat ssh.socket >/dev/null 2>&1; then
+        ssh_unit="ssh.socket"
+      else
+        ssh_unit="ssh.service"
       fi
-    else
-      warn "Could not start sshd; is openssh-server installed? (sudo dnf install openssh-server)"
+
+      if sudo systemctl enable --now "$ssh_unit"; then
+        if [ "$(systemctl is-enabled ssh.socket 2>/dev/null || true)" = enabled ] &&
+           [ "$was_socket" != enabled ]; then
+          record ssh_socket enabled-by-hdlounge
+        fi
+        if [ "$(systemctl is-enabled ssh.service 2>/dev/null || true)" = enabled ] &&
+           [ "$was_service" != enabled ]; then
+          record ssh enabled-by-hdlounge
+        fi
+
+        address="$(ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}')" || address=""
+        echo "   From another computer:  ssh $USER@${HOSTNAME:-$(uname -n)}${address:+   (or ssh $USER@$address)}"
+        echo "   Tip: copy a key over with ssh-copy-id and use that instead of a password."
+
+        if ufw_active && ! sudo -n ufw status 2>/dev/null | grep -Eq 'OpenSSH|^22(/tcp)?[[:space:]]'; then
+          warn "The firewall (ufw) does not allow SSH. Open it with:"
+          echo "   sudo ufw allow OpenSSH"
+        fi
+      else
+        warn "Could not start the SSH service."
+      fi
     fi
   fi
 fi
@@ -895,14 +931,20 @@ PY
 
 # GSConnect talks to the KDE Connect app on the phone on ports 1714-1764.
 kdeconnect_port_open() {
-  firewall-cmd --query-service=kdeconnect >/dev/null 2>&1 && return 0
-  firewall-cmd --list-ports 2>/dev/null | tr ' ' '\n' | awk -F'[-/]' '
-    $NF == "tcp" && ($1 == 1716 || (NF == 3 && $1 <= 1716 && $2 >= 1716)) { found = 1 }
-    END { exit !found }'
+  local status
+  status="$(sudo -n ufw status 2>/dev/null)" || return 1
+  grep -Eq '^1714:1764/tcp[[:space:]]+ALLOW' <<<"$status" &&
+    grep -Eq '^1714:1764/udp[[:space:]]+ALLOW' <<<"$status"
 }
 
+# First choice: the Ubuntu package. Fallback: the build from extensions.gnome.org.
 install_gsconnect() {
   local major url zip
+
+  if [ "$SUDO_OK" = 1 ] && sudo apt-get install -y "$GSCONNECT_APT"; then
+    return 0
+  fi
+
   major="$(gnome-shell --version | grep -oE '[0-9]+' | head -1)"
   url="$(curl -fsSL --max-time 30 \
            "https://extensions.gnome.org/extension-info/?uuid=$GSCONNECT_UUID&shell_version=$major" |
@@ -925,10 +967,10 @@ if [ "$WANT_GSCONNECT" = 1 ]; then
   say "Installing GSConnect"
   if install_gsconnect && enable_extension "$GSCONNECT_UUID"; then
     echo "   Installed. It starts after the next login."
-    if command -v firewall-cmd >/dev/null 2>&1 &&
-       firewall-cmd --state >/dev/null 2>&1 && ! kdeconnect_port_open; then
-      warn "The firewall blocks GSConnect. Open it with:"
-      echo "   sudo firewall-cmd --permanent --add-service=kdeconnect && sudo firewall-cmd --reload"
+    if ufw_active && ! kdeconnect_port_open; then
+      warn "The firewall (ufw) may block GSConnect. Open its ports with:"
+      echo "   sudo ufw allow 1714:1764/tcp"
+      echo "   sudo ufw allow 1714:1764/udp"
     fi
   else
     WANT_GSCONNECT=0
@@ -936,57 +978,38 @@ if [ "$WANT_GSCONNECT" = 1 ]; then
   fi
 fi
 
-# Apps
-# Pin a .desktop id into the launcher's drawer
+# Google Chrome (for DRM video in the website tiles)
 # -------------------------------------------------------
-
-pin_app() {
-  PYTHONPATH="$APP_DIR" XDG_DATA_DIRS="$FLATPAK_DATA_DIRS" \
-  python3 - "$1" <<'PIN'
-import sys
-from hdlounge.config import Config
-
-app_id = sys.argv[1]
-config = Config()
-if config.is_pinned(app_id):
-    print("   Already in the drawer.")
-else:
-    config.pin(app_id)
-    print("   Added to the drawer."
-          if config.is_pinned(app_id)
-          else "   Could not add it to the drawer; add it with the + button.")
-PIN
+install_chrome() {
+  local deb
+  deb="$(mktemp --suffix=.deb)"
+  chmod 644 "$deb"
+  if curl -fsSL --max-time 600 -o "$deb" "$CHROME_DEB_URL" &&
+     sudo apt-get install -y "$deb"; then
+    rm -f "$deb"
+    return 0
+  fi
+  rm -f "$deb"
+  return 1
 }
 
-for entry in "${PIN_EXISTING[@]}"; do
-  IFS='|' read -r app_id app_name _ <<<"$entry"
-  say "Adding $app_name to the drawer"
-  pin_app "$app_id.desktop" || true
-done
-
-if [ ${#QUEUE[@]} -gt 0 ]; then
-  flatpak remote-add --if-not-exists --user flathub \
-    https://dl.flathub.org/repo/flathub.flatpakrepo >/dev/null 2>&1 || true
+if [ "$WANT_CHROME" = 1 ]; then
+  if [ "$SUDO_OK" != 1 ]; then
+    warn "Skipped Google Chrome (needs sudo). Install it from google.com/chrome."
+  else
+    say "Installing Google Chrome (this can take a while)"
+    if install_chrome; then
+      echo "   Installed."
+    else
+      warn "Could not install Google Chrome; the website tiles will not play DRM video."
+    fi
+  fi
 fi
 
-# One install per app rather than a single transaction, so one failed
-# download does not take the others down with it.
-count=0
-for entry in "${QUEUE[@]}"; do
-  IFS='|' read -r app_id app_name _ app_pin _ <<<"$entry"
-  count=$((count + 1))
-  say "Installing $app_name from Flathub ($count of ${#QUEUE[@]}, this can take a while)"
-  if flatpak install --user -y flathub "$app_id"; then
-    if [ "$app_pin" = "pin" ]; then
-      pin_app "$app_id.desktop" || true
-    fi
-  else
-    warn "Could not install $app_name; skipping."
-  fi
-done
-
+# Website tiles
+# -------------------------------------------------------
 add_websites() {
-  PYTHONPATH="$APP_DIR" XDG_DATA_DIRS="$FLATPAK_DATA_DIRS" \
+  PYTHONPATH="$APP_DIR" \
   python3 - "$@" <<'WEB'
 import sys
 
