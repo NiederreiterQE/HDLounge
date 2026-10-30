@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import urllib.parse
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Callable
 
@@ -16,15 +17,13 @@ from .debugshot import trace
 WEB_APP_PREFIX = "hdlounge-web-"
 
 # (desktop id, name, command) of each browser that can host a website tile,
-# best first. On Ubuntu: Google's own .deb (what install.sh offers to set up),
-# then Chromium as a Snap or as a .deb. A None command is read from the
-# browser's own desktop entry; a tuple is used as it stands, because a Snap's
-# desktop entry does not name the browser binary directly.
+# best first. On Ubuntu: Google's own .deb, then Chromium as a Snap or .deb.
 BROWSERS = (
     ("google-chrome.desktop", "Google Chrome", None),
     ("chromium_chromium.desktop", "Chromium", ("/snap/bin/chromium",)),
     ("chromium.desktop", "Chromium", None),
 )
+
 # Only Chrome ships Widevine.
 DRM_BROWSERS = ("google-chrome.desktop",)
 
@@ -83,9 +82,7 @@ def is_web_app(app_id: str) -> bool:
 
 
 # A host is either a dotted name, or "localhost" for someone running something
-# on this box. Without this almost any typed-in phrase passes: urlsplit happily
-# reports "my favourite show" as the hostname of https://my favourite show, and
-# the tile that results can never load.
+# on this box.
 _HOSTNAME_RE = re.compile(
     r"^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?"
     r"(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$"
@@ -98,16 +95,11 @@ def is_hostname(host: str | None) -> bool:
         return False
     if host == "localhost":
         return True
-    # An IPv4 literal is all digits and dots, which the name pattern allows.
     return bool(_HOSTNAME_RE.match(host))
 
 
 def normalise(url: str) -> str | None:
-    """A full http(s) address, or None if this is not one.
-
-    Anything the desktop entry's Exec quoting would have to escape is
-    percent-encoded instead, so the address can go in as it is.
-    """
+    """A full http(s) address, or None if this is not one."""
     url = url.strip()
     if not url:
         return None
@@ -123,12 +115,7 @@ def normalise(url: str) -> str | None:
 
 
 def wm_class(url: str) -> str:
-    """The window class a Chromium-based browser gives an --app window.
-
-    Built from the address's host and path, with slashes made underscores:
-    https://www.netflix.com becomes chrome-www.netflix.com__-Default, the last
-    part being the browser profile.
-    """
+    """The window class a Chromium-based browser gives an --app window."""
     parts = urllib.parse.urlsplit(url)
     name = f"{parts.hostname}_{parts.path or '/'}"
     return f"chrome-{name}-Default".replace("/", "_")
@@ -144,13 +131,7 @@ def create(
     on_icon: Callable[[], None] | None = None,
     on_settled: Callable[[], None] | None = None,
 ) -> str | None:
-    """Write a website tile's desktop entry and return its app id.
-
-    None if there is no browser to open it in, or the address is not a
-    website. The site's icon is fetched afterwards: `on_icon` runs if one
-    arrives, so the tile can be redrawn with it, and `on_settled` once the
-    fetch is over either way -- straight away if there was nothing to fetch.
-    """
+    """Write a website tile's desktop entry and return its app id."""
     found = browser()
     url = normalise(url)
     name = " ".join(name.split())
@@ -186,16 +167,12 @@ def create(
         _fetch_icon(url, icon, app_id, on_icon, on_settled)
     elif on_settled is not None:
         on_settled()
+
     return app_id
 
 
 def _free_slug(base: str, url: str) -> str:
-    """`base`, or `base-2` and so on if that name already opens another site.
-
-    The same site under the same name is the same tile, and is rewritten in
-    place; a second "News" for a different address must not replace the
-    first one's address and icon.
-    """
+    """Find a free name, or reuse the name for the same website."""
     slug, n = base, 1
     while True:
         entry = applications_dir() / f"{WEB_APP_PREFIX}{slug}.desktop"
@@ -217,6 +194,30 @@ def remove(app_id: str) -> None:
     trace(f"WEBAPP removed {app_id}")
 
 
+class _IconParser(HTMLParser):
+    """Collect icon links declared by a website."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.icons: list[tuple[int, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "link":
+            return
+
+        values = dict(attrs)
+        rel = (values.get("rel") or "").lower().split()
+        href = values.get("href")
+
+        if not href:
+            return
+
+        if "apple-touch-icon" in rel:
+            self.icons.append((0, href))
+        elif "icon" in rel:
+            self.icons.append((1, href))
+
+
 def _fetch_icon(
     url: str,
     icon: Path,
@@ -224,45 +225,97 @@ def _fetch_icon(
     on_icon: Callable[[], None] | None,
     on_settled: Callable[[], None] | None,
 ) -> None:
-    """Best effort: the site's own touch icon, big enough for a tile.
-
-    Only the site itself is asked -- no third-party favicon service learns
-    what is being watched. Without one the tile keeps the generic icon.
-    """
+    """Fetch a site's own icon without blocking the interface."""
     parts = urllib.parse.urlsplit(url)
-    source = f"{parts.scheme}://{parts.netloc}/apple-touch-icon.png"
+    base = f"{parts.scheme}://{parts.netloc}"
     icons_dir().mkdir(parents=True, exist_ok=True)
     partial = icon.with_suffix(".part")
 
-    def done(stdout: str | None) -> None:
-        try:
-            _use_icon(stdout)
-        finally:
-            if on_settled is not None:
-                on_settled()
+    def finish() -> None:
+        if on_settled is not None:
+            on_settled()
 
-    def _use_icon(stdout: str | None) -> None:
-        try:
-            ok = stdout is not None and partial.read_bytes()[:8] == PNG_MAGIC
-        except OSError:
-            ok = False
-        if not ok:
+    def download(candidates: list[str]) -> None:
+        if not candidates:
             partial.unlink(missing_ok=True)
+            finish()
             return
-        partial.replace(icon)
-        entry = applications_dir() / app_id
-        if not entry.exists():
-            return  # removed while the icon was on its way
-        text = entry.read_text(encoding="utf-8")
-        # A lambda, not a replacement string: re.sub reads backslashes and
-        # \g<...> in a replacement as escapes, and the path is a filename,
-        # not a pattern.
-        entry.write_text(
-            re.sub(r"^Icon=.*$", lambda _m: f"Icon={icon}", text, flags=re.M),
-            encoding="utf-8",
-        )
-        trace(f"WEBAPP icon {app_id}")
-        if on_icon is not None:
-            on_icon()
 
-    proc.run(["curl", "-fsSL", "--max-time", "20", "-o", str(partial), source], done)
+        source = candidates.pop(0)
+
+        def done(stdout: str | None) -> None:
+            try:
+                ok = stdout is not None and partial.read_bytes()[:8] == PNG_MAGIC
+            except OSError:
+                ok = False
+
+            if not ok:
+                partial.unlink(missing_ok=True)
+                download(candidates)
+                return
+
+            partial.replace(icon)
+            entry = applications_dir() / app_id
+
+            if not entry.exists():
+                finish()
+                return
+
+            text = entry.read_text(encoding="utf-8")
+            entry.write_text(
+                re.sub(
+                    r"^Icon=.*$",
+                    lambda _m: f"Icon={icon}",
+                    text,
+                    flags=re.M,
+                ),
+                encoding="utf-8",
+            )
+
+            trace(f"WEBAPP icon {app_id}")
+
+            if on_icon is not None:
+                on_icon()
+
+            finish()
+
+        proc.run(
+            ["curl", "-fsSL", "--max-time", "20", "-o", str(partial), source],
+            done,
+        )
+
+    def page_loaded(html: str | None) -> None:
+        candidates: list[str] = []
+
+        if html:
+            parser = _IconParser()
+            try:
+                parser.feed(html)
+                parser.close()
+            except Exception:
+                pass
+
+            # Prefer touch icons, then ordinary favicon links.
+            for _priority, href in sorted(parser.icons, key=lambda item: item[0]):
+                candidate = urllib.parse.urljoin(url, href)
+                if candidate not in candidates:
+                    candidates.append(candidate)
+
+        # Fallbacks for sites without icon links in their HTML.
+        for fallback in (
+            f"{base}/apple-touch-icon.png",
+            f"{base}/favicon.png",
+        ):
+            if fallback not in candidates:
+                candidates.append(fallback)
+
+        download(candidates)
+
+    proc.run(
+        [
+            "curl", "-fsSL", "--max-time", "20",
+            "-A", "Mozilla/5.0",
+            url,
+        ],
+        page_loaded,
+    )
