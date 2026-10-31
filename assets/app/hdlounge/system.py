@@ -4,47 +4,62 @@
 from __future__ import annotations
 
 import os
+import subprocess
 
 from gi.repository import Gio, GLib, GObject
 
 from . import proc
 
-LOGIN1 = "org.freedesktop.login1"
-LOGIN1_PATH = "/org/freedesktop/login1"
-LOGIN1_MANAGER = "org.freedesktop.login1.Manager"
-
 # Power
 # -------------------------------------------------------
 
-def _login1_call(method: str) -> None:
+
+def _power_action(action: str) -> None:
+    commands = {
+        "poweroff": ["systemctl", "poweroff"],
+        "reboot": ["systemctl", "reboot"],
+        "suspend": ["systemctl", "suspend"],
+    }
+
+    command = commands.get(action)
+    if command is None:
+        return
+
     try:
-        bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
-        bus.call(
-            LOGIN1,
-            LOGIN1_PATH,
-            LOGIN1_MANAGER,
-            method,
-            GLib.Variant("(b)", (True,)),  # interactive=True
-            None,
-            Gio.DBusCallFlags.NONE,
-            5000,
-            None,
-            None,
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
         )
-    except GLib.Error as exc:
-        print(f"hdlounge: logind {method} failed: {exc.message}")
+        if result.returncode != 0:
+            message = result.stderr.strip() or result.stdout.strip()
+            subprocess.run(
+                [
+                    "logger",
+                    "-t", "hdlounge",
+                    f"{action} failed (exit {result.returncode}): {message}",
+                ],
+                check=False,
+            )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        subprocess.run(
+            ["logger", "-t", "hdlounge", f"{action} failed: {exc}"],
+            check=False,
+        )
 
 
 def power_off() -> None:
-    _login1_call("PowerOff")
+    _power_action("poweroff")
 
 
 def reboot() -> None:
-    _login1_call("Reboot")
+    _power_action("reboot")
 
 
 def suspend() -> None:
-    _login1_call("Suspend")
+    _power_action("suspend")
 
 
 def log_out() -> None:
