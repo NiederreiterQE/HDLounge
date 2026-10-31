@@ -1,3 +1,4 @@
+
 """Power actions, network status and Bluetooth status."""
 
 from __future__ import annotations
@@ -12,10 +13,8 @@ LOGIN1 = "org.freedesktop.login1"
 LOGIN1_PATH = "/org/freedesktop/login1"
 LOGIN1_MANAGER = "org.freedesktop.login1.Manager"
 
-
 # Power
 # -------------------------------------------------------
-
 
 def _login1_call(method: str) -> None:
     try:
@@ -25,7 +24,7 @@ def _login1_call(method: str) -> None:
             LOGIN1_PATH,
             LOGIN1_MANAGER,
             method,
-            GLib.Variant("(b)", (False,)),  # interactive=False
+            GLib.Variant("(b)", (True,)),  # interactive=True
             None,
             Gio.DBusCallFlags.NONE,
             5000,
@@ -63,20 +62,22 @@ class Network(GObject.Object):
 
     def __init__(self) -> None:
         super().__init__()
-        self.state = "unknown"  # connected / disconnected / unknown
-        self.primary = ""  # name of the active connection
-        self.kind = ""  # wifi / ethernet / ...
+        self.state = "unknown"
+        self.primary = ""
+        self.kind = ""
         self.refresh()
 
     def refresh(self) -> None:
         proc.run(
-            ["nmcli", "-t", "-f", "STATE,CONNECTIVITY", "general"], self._on_general
+            ["nmcli", "-t", "-f", "STATE,CONNECTIVITY", "general"],
+            self._on_general,
         )
 
     def _on_general(self, stdout: str | None) -> None:
         if stdout is None:
             self._update("unavailable", "", "")
             return
+
         first = (stdout.strip().splitlines() or [""])[0]
         state = first.split(":")[0] if first else "unknown"
 
@@ -89,12 +90,19 @@ class Network(GObject.Object):
                     "802-3-ethernet",
                 ):
                     name = parts[0]
-                    kind = "wifi" if parts[1] == "802-11-wireless" else "ethernet"
+                    kind = (
+                        "wifi"
+                        if parts[1] == "802-11-wireless"
+                        else "ethernet"
+                    )
                     break
             self._update(state, name, kind)
 
         proc.run(
-            ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show", "--active"],
+            [
+                "nmcli", "-t", "-f", "NAME,TYPE",
+                "connection", "show", "--active",
+            ],
             on_active,
         )
 
@@ -123,37 +131,36 @@ class Network(GObject.Object):
 # Bluetooth
 # -------------------------------------------------------
 
-# At or below this, a remote or controller gets a warning on the home screen.
-# One that goes flat mid-film leaves a TV box with nothing to drive it.
 LOW_BATTERY_PERCENT = 15
 
 
 def parse_bluez(
     objects: dict,
 ) -> tuple[bool, bool, list[str], list[tuple[str, int, str]]]:
-    """Reduce BlueZ's GetManagedObjects to what the launcher shows.
-
-    Returns (adapter present, adapter powered, names of connected devices,
-    [(name, battery percent, icon name)] for the connected ones that report a
-    battery). BlueZ exposes the battery of HID devices -- remotes, controllers
-    -- as org.bluez.Battery1, and the icon says what kind of device it is.
-    """
+    """Reduce BlueZ's GetManagedObjects to what the launcher shows."""
     present = powered = False
     devices: list[str] = []
     batteries: list[tuple[str, int, str]] = []
+
     for interfaces in objects.values():
         adapter = interfaces.get("org.bluez.Adapter1")
         if adapter is not None:
             present = True
             powered = powered or bool(adapter.get("Powered", False))
+
         device = interfaces.get("org.bluez.Device1")
         if device is None or not device.get("Connected", False):
             continue
+
         name = device.get("Alias") or device.get("Address", "device")
         devices.append(name)
+
         battery = interfaces.get("org.bluez.Battery1")
         if battery is not None and "Percentage" in battery:
-            batteries.append((name, int(battery["Percentage"]), device.get("Icon", "")))
+            batteries.append(
+                (name, int(battery["Percentage"]), device.get("Icon", ""))
+            )
+
     return present, powered, sorted(devices), sorted(batteries)
 
 
@@ -166,14 +173,13 @@ class Bluetooth(GObject.Object):
         super().__init__()
         self.present = False
         self.powered = False
-        self.devices: list[str] = []  # aliases of connected devices
-        self.batteries: list[tuple[str, int, str]] = []  # (alias, %, icon)
+        self.devices: list[str] = []
+        self.batteries: list[tuple[str, int, str]] = []
         self.refresh()
 
     def refresh(self) -> None:
         fake = os.environ.get("HDLOUNGE_FAKE_BATTERY", "")
         if fake.isdigit():
-            # Testing only: a connected remote at this charge, no hardware.
             self._update(
                 True,
                 True,
@@ -210,6 +216,7 @@ class Bluetooth(GObject.Object):
         except GLib.Error:
             self._update(False, False, [], [])
             return
+
         self._update(*parse_bluez(objects))
 
     def _update(
